@@ -10,3 +10,6 @@ _*
 /user/usys.S
 .gdbinit
 TAGS
+documentacao_estudo.md
+implementation_plan.md
+relatorio.md
