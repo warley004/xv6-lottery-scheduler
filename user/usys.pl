@@ -44,3 +44,4 @@ entry("pause");
 entry("uptime");
 entry("settickets");
 entry("getpinfo");
+entry("getcnt");

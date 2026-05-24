@@ -27,6 +27,7 @@ int uptime(void);
 struct pstat;
 int settickets(int);
 int getpinfo(struct pstat *);
+int getcnt(int);
 
 // ulib.c
 int stat(const char *, struct stat *);
