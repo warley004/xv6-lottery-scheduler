@@ -26,6 +26,21 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+// Pseudo-random number generator for lottery scheduler (LCG)
+static unsigned long randstate = 1;
+
+// Generate a pseudo-random number using Linear Congruential Generator.
+// Returns a non-negative integer.
+static int
+lotteryrand(void)
+{
+  if (randstate == 1) {
+    randstate = ticks + 1;
+  }
+  randstate = randstate * 1103515245 + 12345;
+  return (unsigned int)(randstate / 65536) % 32768;
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -125,6 +140,10 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // Initialize lottery scheduler fields
+  p->tickets = 1;  // Default: 1 ticket
+  p->ticks = 0;    // Never been scheduled yet
+
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     freeproc(p);
@@ -168,6 +187,8 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->tickets = 0;
+  p->ticks = 0;
   p->state = UNUSED;
 }
 
@@ -275,6 +296,9 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // Child inherits parent's tickets
+  np->tickets = p->tickets;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -437,27 +461,48 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
+    // --- Phase 1: Count total tickets of all RUNNABLE processes ---
+    long total_tickets = 0;
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        total_tickets += p->tickets;
       }
       release(&p->lock);
     }
-    if (found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+
+    if (total_tickets == 0) {
+      // No runnable processes; wait for interrupt.
       asm volatile("wfi");
+      continue;
+    }
+
+    // --- Phase 2: Draw a random winning ticket ---
+    long winner = lotteryrand() % total_tickets;
+
+    // --- Phase 3: Find the winning process ---
+    long counter = 0;
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE) {
+        counter += p->tickets;
+        if (counter > winner) {
+          // Switch to chosen process. It is the process's job
+          // to release its lock and then reacquire it
+          // before jumping back to us.
+          p->state = RUNNING;
+          p->ticks++;       // Track how many times this process ran
+          c->proc = p;
+          swtch(&c->context, &p->context);
+
+          // Process is done running for now.
+          // It should have changed its p->state before coming back.
+          c->proc = 0;
+          release(&p->lock);
+          break;
+        }
+      }
+      release(&p->lock);
     }
   }
 }

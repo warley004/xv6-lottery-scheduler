@@ -6,6 +6,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "pstat.h"
+
+extern struct proc proc[];
 
 uint64
 sys_exit(void)
@@ -106,4 +109,58 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_settickets(void)
+{
+  int n;
+  argint(0, &n);
+
+  // Validate: must be at least 1 ticket
+  if (n < 1)
+    return -1;
+
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->tickets = n;
+  release(&p->lock);
+
+  return 0;
+}
+
+uint64
+sys_getpinfo(void)
+{
+  uint64 addr; // user-space pointer to struct pstat
+  argaddr(0, &addr);
+
+  if (addr == 0)
+    return -1;
+
+  struct proc *p;
+  struct pstat ps;
+  memset(&ps, 0, sizeof(ps));
+
+  // Fill pstat structure from process table
+  int i = 0;
+  for (p = proc; p < &proc[NPROC]; p++, i++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      ps.inuse[i] = 1;
+      ps.pid[i] = p->pid;
+      ps.tickets[i] = p->tickets;
+      ps.ticks[i] = p->ticks;
+    } else {
+      ps.inuse[i] = 0;
+    }
+    release(&p->lock);
+  }
+
+  // Copy the pstat structure to user space
+  struct proc *curproc = myproc();
+  if (copyout(curproc->pagetable, addr, (char *)&ps, sizeof(ps)) < 0)
+    return -1;
+
+  return 0;
 }
